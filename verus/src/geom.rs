@@ -12,15 +12,16 @@
 //   1.3  the 3 x 3 neighbourhood on the torus is symmetric, and contains the
 //        cell itself.
 
+use vstd::arithmetic::div_mod::lemma_fundamental_div_mod;
 use vstd::prelude::*;
 
 verus! {
 
-pub const COLS: int = 24;
-pub const ROWS: int = 16;
-pub const CELL: int = 40;
-pub const WIDTH: int = 960;   // COLS * CELL
-pub const HEIGHT: int = 640;  // ROWS * CELL
+pub spec const COLS: int = 24;
+pub spec const ROWS: int = 16;
+pub spec const CELL: int = 40;
+pub spec const WIDTH: int = 960;   // COLS * CELL
+pub spec const HEIGHT: int = 640;  // ROWS * CELL
 
 /// Euclidean wrap into `0..n`.
 pub open spec fn wrap(v: int, n: int) -> int
@@ -106,10 +107,20 @@ proof fn lemma_wrap_neg(v: int, n: int)
         wrap(v, n) == 1 <==> wrap(-v, n) == n - 1,
         wrap(v, n) == n - 1 <==> wrap(-v, n) == 1,
 {
-    lemma_wrap_in_range(v, n);
-    lemma_wrap_in_range(-v, n);
-    assert((v % n + (-v) % n) % n == 0) by (nonlinear_arith)
-        requires n > 0;
+    // r + s is a multiple of n in 0..2n, so it is 0 or n: s == 0 when r == 0,
+    // and s == n - r otherwise.
+    let r = v % n;
+    let s = (-v) % n;
+    assert(0 <= v % n < n) by (nonlinear_arith) requires n > 0;
+    assert(0 <= (-v) % n < n) by (nonlinear_arith) requires n > 0;
+    assert(wrap(v, n) == r && wrap(-v, n) == s);
+    lemma_fundamental_div_mod(v, n);
+    lemma_fundamental_div_mod(-v, n);
+    let k = -(v / n + (-v) / n);
+    assert(r + s == n * k) by (nonlinear_arith)
+        requires v == n * (v / n) + r, -v == n * ((-v) / n) + s, k == -(v / n + (-v) / n);
+    assert(k == 0 || k == 1) by (nonlinear_arith)
+        requires r + s == n * k, 0 <= r < n, 0 <= s < n, n > 0;
 }
 
 /// SPEC 1.3. The neighbourhood is symmetric and reflexive.

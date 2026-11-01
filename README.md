@@ -67,5 +67,6 @@ in no cell, with no holes left in the sky.
 ./verify.sh --quick    # without the console and the drill
 ```
 
-`verify.sh` on the Mac is the authoritative gate. Verus has not been run in
-the cloud build (`docs/SPEC.md` section 8).
+`verify.sh` on the Mac is the authoritative gate, and the only one that runs
+Verus; the cloud build does not. `docs/SPEC.md` section 8 records what each
+model proves.

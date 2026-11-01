@@ -43,7 +43,9 @@ fn spec(name: &'static str, a: u16, b: u16, port: u16) -> HostSpec {
 
 struct Lab {
     hosts: Vec<HostProc>,
-    root: std::path::PathBuf,
+    root: PathBuf,
+    /// The lab's directory, deleted on drop unless the test failed.
+    tmp: Option<tempfile::TempDir>,
     client: reqwest::Client,
     flock: Flock,
     started: Instant,
@@ -58,11 +60,14 @@ impl Lab {
         ]
     }
 
-    fn new(root: &Path) -> Self {
-        reap_on_interrupt(root.to_path_buf());
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        reap_on_interrupt(root.clone());
         Self {
             hosts: Self::specs().into_iter().map(HostProc::new).collect(),
-            root: root.to_path_buf(),
+            root,
+            tmp: Some(tmp),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
             flock: Flock::new(Self::specs()),
             started: Instant::now(),
@@ -96,12 +101,18 @@ impl Lab {
             if done(&f) {
                 return f;
             }
-            assert!(
-                t.elapsed() < within,
-                "never: {what} (holes {}, population {})",
-                f.holes,
-                f.population
-            );
+            if t.elapsed() >= within {
+                let holes: Vec<String> = Cell::all()
+                    .filter(|c| f.cells[usize::from(c.index())] == -1)
+                    .map(|c| c.to_string())
+                    .collect();
+                panic!(
+                    "never: {what} (holes {} [{}], population {})",
+                    f.holes,
+                    holes.join(" "),
+                    f.population
+                );
+            }
             tokio::time::sleep(Duration::from_millis(60)).await;
         }
     }
@@ -157,6 +168,12 @@ impl Drop for Lab {
         for h in &mut self.hosts {
             let _ = h.kill();
         }
+        // On a failure, keep the hosts' logs and databases to look at.
+        if std::thread::panicking()
+            && let Some(tmp) = self.tmp.take()
+        {
+            eprintln!("lab kept at {}", tmp.keep().display());
+        }
     }
 }
 
@@ -194,8 +211,7 @@ fn owner_of(cell: Cell) -> i8 {
     reason = "one drill, each step depends on the last"
 )]
 async fn holes_open_and_close_and_the_count_adds_up() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut lab = Lab::new(tmp.path());
+    let mut lab = Lab::new();
     lab.start(0);
     lab.start(1);
 
