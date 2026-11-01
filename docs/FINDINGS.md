@@ -65,3 +65,19 @@ of them eight times a second. Measured on a 2-CPU cloud box, release build,
    - `SQLite replication tick failed … the checkpoint it needs first was
      blocked by another connection` appears under this write rate. It is
      transient, as the message says, and the next tick succeeds.
+
+## Status
+
+The fixes are in autumn-web ([autumn-foundation/autumn#3556](https://github.com/autumn-foundation/autumn/pull/3556)). Murmuration uses autumn-web 0.9
+from crates.io, so it gets them with the next release.
+
+| Finding | Status |
+| --- | --- |
+| 1. Lag above `rpo_secs` | Fixed, not yet measured again. `replication_workers` threads (default 4) ship the databases of a pass. A pass starts every `sync_interval_secs`, the database that shipped longest ago first. Health shows `last_pass_ms` and `ship_workers`. The fleet guide and the production guide give the RPO condition. |
+| 2. Ownership follows the slot | No change. It works as documented. |
+| 3. Fencing held | No change. |
+| 4. Restores after a takeover | Documented in the failover procedure. Murmuration already limits a host to 16 cells at a time. |
+| 5. Losses at a takeover | Smaller with finding 1, not yet measured again. The failover procedure names the loss: up to `worst_lag_seconds` per database. |
+| 6. Connection warning | Fixed. A SQLite app gets a SQLite warning. |
+| 6. `unowned: 80` | Fixed. A pass kept the replicator lock of a database that closed during the pass, so the reopen could not claim it. A pass now looks up each database when it gets to it. |
+| 6. Blocked checkpoint | Fixed. The first one logs at `debug`. A second one in a row logs a warning. |
