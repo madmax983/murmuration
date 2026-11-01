@@ -1,0 +1,28 @@
+# The console. Each host reads its own autumn.toml, written by the console from
+# crates/murmuration-app/host.toml into murmuration-lab/<host>/.
+
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[log]
+level = "info"
+format = "Pretty"
+
+[health]
+path = "/health"
+
+# The buttons post with the token from the page's meta tag.
+[security.csrf]
+enabled = true
+
+[session]
+backend = "memory"
+allow_memory_in_production = true
+
+[jobs]
+backend = "memory"
+workers = 0
+
+[channels]
+backend = "local"

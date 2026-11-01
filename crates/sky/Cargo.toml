@@ -1,0 +1,18 @@
+[package]
+name = "sky"
+description = "Murmuration's engine: the sky as 384 cells, the flock, moving boids between cells without dropping them, and counting who survived. No IO, no async, no clock."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

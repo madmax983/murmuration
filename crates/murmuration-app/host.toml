@@ -1,0 +1,63 @@
+# One Murmuration host. The console writes this file into the host's working
+# directory, filling in the double-braced placeholders; run by hand it is a template.
+#
+# A host is one "volume": its own fleet root. Every host shares one control
+# database (where the ownership table lives) and one replication destination.
+
+[server]
+host = "127.0.0.1"
+port = {{port}}
+
+[log]
+level = "info"
+format = "Pretty"
+
+[health]
+path = "/health"
+# The console reads `fleet:ownership` (held ranges, epochs, serving) here.
+detailed = true
+
+# The host API is JSON for the console's client, on loopback only.
+[security.csrf]
+enabled = false
+
+[session]
+backend = "memory"
+allow_memory_in_production = true
+
+[jobs]
+backend = "memory"
+workers = 0
+
+[channels]
+backend = "local"
+
+[database]
+url = "sqlite://{{shared}}/control.db"
+
+# One tenant per cell of the sky: 384 cells, so 384 files, and each host
+# serves the cells whose tenant id hashes into its slot range (about half).
+[database.fleet]
+mode = "tenant"
+root = "{{volume}}"
+create_on_demand = true
+max_open = 256
+pool_size = 1
+idle_close_secs = 120
+# A host on an empty volume serves a slot by restoring it from the replica.
+restore_missing = true
+
+[database.fleet.ownership]
+owner = "{{name}}"
+slots = ["{{slots}}"]
+# Short, so a failover happens in front of you: a dead owner's lease lapses
+# within ~6 s, and a live one renews every 2 s.
+lease_secs = 6
+
+[replication]
+enabled = true
+path = "{{shared}}/replica"
+rpo_secs = 2
+sync_interval_secs = 1
+# The lab restores for real on every takeover; no background verification.
+verify_interval_secs = 0

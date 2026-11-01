@@ -1,0 +1,5 @@
+# Dev overrides for the console under `cargo run`. The console keeps no
+# database; the hosts' SQLite files live in ./murmuration-lab.
+
+[session]
+secure = false

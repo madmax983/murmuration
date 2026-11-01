@@ -1,0 +1,32 @@
+[package]
+name = "murmuration-app"
+description = "Murmuration: a flock of boids whose only home is a SQLite fleet split between hosts — kill one and holes open in the sky."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+default-run = "murmuration-app"
+
+[dependencies]
+sky = { path = "../sky" }
+anyhow = { workspace = true }
+autumn-web = { workspace = true }
+diesel = { workspace = true }
+diesel-async = { workspace = true }
+diesel_migrations = { workspace = true }
+maud = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+autumn-web = { workspace = true, features = ["test-support"] }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
