@@ -147,8 +147,14 @@ pub async fn read(State(state): State<AppState>, Json(req): Json<ReadReq>) -> Re
         match t.await {
             Ok(Ok(rows)) => resp.cells.push(rows),
             Ok(Err(Miss::NotOwner)) => resp.refused += 1,
-            Ok(Err(Miss::Failed(why))) => resp.failed.push(why),
-            Err(e) => resp.failed.push(e.to_string()),
+            Ok(Err(Miss::Failed(why))) => {
+                tracing::warn!(%why, "cell read failed");
+                resp.failed.push(why);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cell read task failed");
+                resp.failed.push(e.to_string());
+            }
         }
     }
     Json(resp).into_response()
@@ -245,8 +251,14 @@ pub async fn write(State(state): State<AppState>, Json(req): Json<WriteReq>) -> 
         match t.await {
             Ok((_, Ok(d))) => resp.done.push(d),
             Ok((cell, Err(Miss::NotOwner))) => resp.refused.push(cell),
-            Ok((_, Err(Miss::Failed(why)))) => resp.failed.push(why),
-            Err(e) => resp.failed.push(e.to_string()),
+            Ok((_, Err(Miss::Failed(why)))) => {
+                tracing::warn!(%why, "cell write failed");
+                resp.failed.push(why);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cell write task failed");
+                resp.failed.push(e.to_string());
+            }
         }
     }
     Json(resp).into_response()
