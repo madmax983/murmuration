@@ -162,7 +162,7 @@ if [ -z "$VERUS" ]; then
     record "verus" "FAIL"
 else
     printf 'using %s\n' "$VERUS"
-    # docs/SPEC.md section 8 ranks them by how likely they are to need a pass.
+    # docs/SPEC.md section 8 records what each one proves.
     for source in verus/src/moves.rs verus/src/resolve.rs verus/src/geom.rs; do
         name="verus $(basename "$source" .rs)"
         printf '\n  %s\n' "$source"

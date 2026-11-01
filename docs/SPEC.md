@@ -136,10 +136,16 @@ kill to every hole closed 9.8 s; fail-back 2.8 s; 16–78 boids lost and
 rewinds of up to 3.3–5.0 s per takeover, because replication lagged 3–14 s
 behind `rpo_secs = 2` (FINDINGS 1); zero stale, zero double.
 
-## 8. Scoreboard — the Verus has not been run yet
+## 8. Scoreboard — what Verus has proved
 
-| Obligation | File | Confidence | Why |
+Run by `./verify.sh` on the Mac with Verus 0.2026.08.23.fbbbbcf, and all
+three verify. The cloud build runs no Verus, so only the Mac run counts.
+
+| Obligation | File | Result | Notes |
 |---|---|---|---|
-| 1.1, 1.3 | `geom.rs` | medium-high | `%` and `/` by constants; may need `vstd::arithmetic` hints for the wrap. |
-| 4.2 | `moves.rs` | high | One invariant over a map of sets; the guard does the work. |
-| 5.1 | `resolve.rs` | medium | A loop invariant with a lexicographic maximum. |
+| 1.1, 1.2, 1.3 | `geom.rs` | verified (21) | The constants are `spec const` (`int` is ghost-only). 1.3's `lemma_wrap_neg` needed `lemma_fundamental_div_mod`: `v % n + (-v) % n` is a multiple of `n` in `0..2n`, so `0` or `n`. |
+| 4.2 | `moves.rs` | verified (5) | One invariant over a map of sets; the guard does the work. |
+| 5.1 | `resolve.rs` | verified (4) | A loop invariant with a lexicographic maximum. |
+
+The counts are Verus's "verified" totals per file; a model that gains or
+loses a lemma changes its count. Any error fails the gate.
