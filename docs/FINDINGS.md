@@ -68,16 +68,44 @@ of them eight times a second. Measured on a 2-CPU cloud box, release build,
 
 ## Status
 
-The fixes are in autumn-web ([autumn-foundation/autumn#3556](https://github.com/autumn-foundation/autumn/pull/3556)). Murmuration uses autumn-web 0.9
-from crates.io, so it gets them with the next release.
+The fixes shipped in autumn-web 0.10.0
+([autumn-foundation/autumn#3556](https://github.com/autumn-foundation/autumn/pull/3556)),
+and Murmuration now uses it. The findings above stand as measured on 0.9.
 
 | Finding | Status |
 | --- | --- |
-| 1. Lag above `rpo_secs` | Fixed, not yet measured again. `replication_workers` threads (default 4) ship the databases of a pass. A pass starts every `sync_interval_secs`, the database that shipped longest ago first. Health shows `last_pass_ms` and `ship_workers`. The fleet guide and the production guide give the RPO condition. |
-| 2. Ownership follows the slot | No change. It works as documented. |
-| 3. Fencing held | No change. |
-| 4. Restores after a takeover | Documented in the failover procedure. Murmuration already limits a host to 16 cells at a time. |
-| 5. Losses at a takeover | Smaller with finding 1, not yet measured again. The failover procedure names the loss: up to `worst_lag_seconds` per database. |
-| 6. Connection warning | Fixed. A SQLite app gets a SQLite warning. |
-| 6. `unowned: 80` | Fixed. A pass kept the replicator lock of a database that closed during the pass, so the reopen could not claim it. A pass now looks up each database when it gets to it. |
-| 6. Blocked checkpoint | Fixed. The first one logs at `debug`. A second one in a row logs a warning. |
+| 1. Lag above `rpo_secs` | Fixed, measured again (below). `replication_workers` threads (default 4) ship the databases of a pass. A pass starts every `sync_interval_secs`, the database that shipped longest ago first. Health shows `last_pass_ms` and `ship_workers`. In steady state `worst_lag_seconds` stays at or under `rpo_secs` on both hosts. It still goes above `rpo_secs` for a few seconds while a host restores a whole range (finding 4). |
+| 2. Ownership follows the slot | No change. It works as documented. Still 152 and 232 cells. |
+| 3. Fencing held | Held again: no stale epoch and no cell served twice in any 0.10 run. |
+| 4. Restores after a takeover | Documented in the failover procedure. Murmuration already limits a host to 16 cells at a time. Kill to every hole closed: 8.4–8.7 s. |
+| 5. Losses at a takeover | About halved, measured again (below). The failover procedure names the loss: up to `worst_lag_seconds` per database. What is left is the cost of a 1 s sync interval. |
+| 6. Connection warning | Fixed, seen in the host logs. The SQLite warning counts open files and names `ulimit -n`. It no longer mentions Postgres. |
+| 6. `unowned: 80` | Fixed: a pass kept the replicator lock of a database that closed during the pass, so the reopen could not claim it. A pass now looks up each database when it gets to it. Not reproduced on the 4-CPU box with 0.9 or with 0.10 (`unowned` stayed 0), so this run does not confirm the fix. |
+| 6. Blocked checkpoint | Fixed. The first one logs at `debug`. A second one in a row logs a warning. 0.9 logged two such warnings across three runs; 0.10 logged none. |
+
+### Measured again on 0.10
+
+The same box (4 CPUs, which is more than the 2-CPU box above, so the 0.9
+numbers here are lower than finding 1's), release builds, the same
+`host.toml`, three runs of `tools/drill.py` per version. Each run waited for
+the flock to reach 390–400 birds before the kill. `worst_lag_seconds` was
+read from `/actuator/health` every half second, in steady state before the
+drill.
+
+| | autumn-web 0.9 | autumn-web 0.10 |
+| --- | --- | --- |
+| `worst_lag_seconds`, host-a (152 cells), p50 / max | 2 / 3–4 s | 1 / 1–2 s |
+| `worst_lag_seconds`, host-b (232 cells), p50 / max | 2–3 / 5 s | 1 / 2–3 s |
+| `last_pass_ms`, host-a / host-b, p50 | not reported | ~790 / ~1100 ms |
+| Lost at the takeover | 95, 82, 75 | 35, 36, 42 |
+| Deepest rewind at the takeover | 2.1–2.4 s | 0.86–1.04 s |
+| Lost over the whole drill (takeover and fail-back) | 164–191 | 72–111 |
+| Stale epochs, cells served twice | 0, 0 | 0, 0 |
+
+Two readings above `rpo_secs` remain on 0.10, both during the drill. While
+host-a takes its range back from the frozen host-c, it restores 152 cells.
+Passes on host-a and host-b then stretch to 2–4.5 s and `worst_lag_seconds`
+reaches 3–6 s, and host-b's indicator went `DOWN` once. The thawed host-c
+reports 13–14 s, the time it spent frozen, until it drops the range. The
+first is finding 4 (restores compete with shipping). The second is a frozen
+process, as expected. Neither is a hot fleet's steady state.
