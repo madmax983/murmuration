@@ -1,6 +1,6 @@
 # Murmuration
 
-**A flock that lives in 384 SQLite files.** A lab for autumn-web 0.9's
+**A flock that lives in 384 SQLite files.** A lab for autumn-web 0.10's
 tenant fleet with slot ownership and replication, where failover is
 something you can see.
 
