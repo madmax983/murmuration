@@ -68,7 +68,7 @@ pub async fn index(csrf: Option<CsrfToken>) -> Markup {
                         ol id="timeline" class="timeline" {}
                     }
                     footer {
-                        "Every host is a real autumn-web 0.9 process: a tenant fleet with "
+                        "Every host is a real autumn-web 0.10 process: a tenant fleet with "
                         code { "[database.fleet.ownership]" } " and " code { "[replication]" }
                         ". The lab lives in " code { "murmuration-lab/" } "; each host's log is "
                         code { "murmuration-lab/<host>/host.log" } "."

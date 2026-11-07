@@ -2,7 +2,7 @@
 
 A flock of boids whose only home is a SQLite fleet split between hosts.
 Kill a host and holes open in the sky; start the standby and it closes them
-from the replica. Built on autumn-web 0.9's tenant fleet with
+from the replica. Built on autumn-web 0.10's tenant fleet with
 `[database.fleet.ownership]` and `[replication]`. See `PITCH.md` for what it
 shows and `docs/FINDINGS.md` for what it found.
 

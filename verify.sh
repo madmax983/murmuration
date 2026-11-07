@@ -145,7 +145,7 @@ if command -v autumn >/dev/null 2>&1; then
     if (cd crates/murmuration-app && autumn routes audit); then record "routes audit" "PASS"
     else record "routes audit" "FAIL"; fi
 else
-    printf '%sskipped%s autumn CLI not on PATH (cargo install autumn-cli --version 0.9.0)\n' "$YELLOW" "$OFF"
+    printf '%sskipped%s autumn CLI not on PATH (cargo install autumn-cli --version 0.10.0)\n' "$YELLOW" "$OFF"
     record "routes audit" "SKIP"
 fi
 
