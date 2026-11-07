@@ -4,14 +4,16 @@
 //! - [`geom`] — 24 × 16 cells on a torus; each cell is one tenant file
 //!   (`verus/src/geom.rs`).
 //! - [`flock`] — separation, alignment, cohesion, holes, births.
-//! - [`moves`] — insert-then-delete between cells; never drops a boid
+//! - [`moves`] — insert, then delete the older copy; never drops a boid
 //!   (`verus/src/moves.rs`).
+//! - [`durable`] — what has reached a replica, and the guard on every delete.
 //! - [`resolve`] — one copy per boid, the newest (`verus/src/resolve.rs`).
 //! - [`headcount`] — present, rewound, in a hole, missing, lost.
 //! - [`watermark`] — per-cell epoch fencing on the conductor's side.
 //! - [`ranges`] — slot ranges and the lab's three hosts.
 #![forbid(unsafe_code)]
 
+pub mod durable;
 pub mod flock;
 pub mod geom;
 pub mod headcount;

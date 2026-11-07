@@ -3,25 +3,29 @@
 //! ```text
 //!   read   every cell from every host ─► served cells, holes
 //!   resolve one copy per boid ─► ghosts to delete
+//!   confirm what each host says reached its replica ─► known tick per boid
 //!   count  against what was acknowledged ─► present / rewound / in a hole / missing / lost
 //!   step   the visible boids, births
-//!   write  phase 1: upserts + ghost deletes, per host
-//!          phase 2: deletes from the cells boids left, only where the upsert was acknowledged
+//!   write  upserts, and deletes of older copies whose boid has a newer row in
+//!          a replica (SPEC 4.1); the other older copies are held
 //! ```
 //!
+//! A boid the conductor did not have in a replica yet (released, born or
+//! found) is an *egg*: it counts once a row of it is confirmed replicated.
 //! Nothing about the flock lives here between ticks except what the conductor
-//! expects (the last acknowledged write of each boid) and the counters. The
-//! flock is whatever the cells say it is.
+//! expects (the last acknowledged write of each boid), the ledger of what is
+//! replicated, and the counters. The flock is whatever the cells say it is.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use sky::durable::{Ack, Ledger, Report};
 use sky::flock::{births, seed, step};
 use sky::geom::CELLS;
 use sky::headcount::{Expect, Status, classify};
-use sky::moves::{deletes, plan};
+use sky::moves::plan;
 use sky::resolve::resolve;
 use sky::watermark::Watermarks;
 use sky::{Boid, BoidId, Cell, HostSpec};
@@ -43,7 +47,7 @@ pub const MARK_MS: u64 = 4_000;
 /// A mark on the sky where something happened.
 #[derive(Debug, Clone, Serialize)]
 pub struct Mark {
-    /// `lost` or `ghost` or `rewound`.
+    /// `lost`, `unhatched` or `rewound`.
     pub kind: &'static str,
     /// Where.
     pub x: f32,
@@ -82,13 +86,14 @@ pub struct RewindRec {
 pub struct Counts {
     /// Ticks run.
     pub ticks: u64,
-    /// Births.
+    /// Births, counted once a row of the newborn is in a replica.
     pub births: u64,
     /// Boids lost.
     pub lost: u64,
     /// Boids that came back older than their last acknowledged write.
     pub rewound: u64,
-    /// Ghost copies deleted.
+    /// Stray older copies deleted: left by a write whose answer was lost, or
+    /// brought back by a restore. A move's own older copy is not one.
     pub ghosts: u64,
     /// Answers refused by the epoch watermark.
     pub stale: u64,
@@ -96,12 +101,16 @@ pub struct Counts {
     pub double: u64,
     /// Upserts whose answer did not come back (they may have landed).
     pub unacked: u64,
-    /// Boids of the first flock whose write was acknowledged.
+    /// Boids of the first flock, counted once a row of each is in a
+    /// replica.
     pub released: u64,
-    /// Boids read that the conductor did not expect: a write that landed
+    /// Boids read that the conductor did not expect (a write that landed
     /// but whose answer was lost, or a boid that came back after being
-    /// counted lost.
+    /// counted lost), counted once a row of each is in a replica.
     pub found: u64,
+    /// Eggs gone before any row of them reached a replica: their cell was
+    /// restored without them. Never counted in the population.
+    pub unhatched: u64,
 }
 
 /// What the sky looks like after a tick.
@@ -118,8 +127,15 @@ pub struct Frame {
     pub cells: Vec<i8>,
     /// Recent marks.
     pub marks: Vec<Mark>,
-    /// Every boid the conductor expects: `released + births + found - lost`.
+    /// Every boid the conductor expects with a row in a replica:
+    /// `released + births + found - lost`.
     pub population: usize,
+    /// Boids acknowledged but not yet in a replica.
+    pub eggs: usize,
+    /// Older copies kept this tick until a newer row is in a replica.
+    pub held: usize,
+    /// Acknowledged cell writes not yet confirmed replicated.
+    pub unconfirmed: usize,
     /// Flying.
     pub flying: usize,
     /// In holes or unaccounted for.
@@ -141,6 +157,9 @@ pub struct Flock {
     tick: u64,
     next_id: u64,
     expect: BTreeMap<BoidId, Expect>,
+    eggs: BTreeMap<BoidId, Origin>,
+    ledger: Ledger,
+    moved_from: BTreeSet<(BoidId, Cell)>,
     last_seen: BTreeMap<BoidId, Boid>,
     water: Watermarks,
     marks: VecDeque<Mark>,
@@ -150,6 +169,21 @@ pub struct Flock {
     counts: Counts,
     slow: Vec<bool>,
     seeded: bool,
+}
+
+/// Where an egg came from: the counter it adds to when it hatches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Released,
+    Born,
+    Found,
+}
+
+/// A cell write a host acknowledged.
+struct Acked {
+    host: String,
+    epoch: u64,
+    committed_ms: u64,
 }
 
 /// Something worth a line on the timeline.
@@ -224,6 +258,10 @@ impl Flock {
         let mut served: BTreeMap<Cell, (usize, u64)> = BTreeMap::new();
         let mut rows: BTreeMap<Cell, Vec<Boid>> = BTreeMap::new();
         for (i, r) in answers {
+            let mut report = Report {
+                durable_through_ms: r.durable_through_ms,
+                serving: BTreeMap::new(),
+            };
             for c in r.cells {
                 let Some(cell) = Cell::from_key(&c.cell) else {
                     continue;
@@ -241,8 +279,10 @@ impl Flock {
                     ));
                 }
                 served.insert(cell, (i, c.epoch));
+                report.serving.insert(cell, c.epoch);
                 rows.insert(cell, c.boids);
             }
+            let _ = self.ledger.report(&r.host, &report);
         }
         let copies = rows
             .into_iter()
@@ -251,13 +291,14 @@ impl Flock {
         Read { served, copies }
     }
 
-    /// Send each host its cells' writes; the cells acknowledged, with epochs.
+    /// Send each host its cells' writes; the cells acknowledged, with who
+    /// committed them, under which epoch, and when.
     async fn write(
         &mut self,
         client: &reqwest::Client,
         by_cell: BTreeMap<Cell, CellWrite>,
         served: &BTreeMap<Cell, (usize, u64)>,
-    ) -> BTreeSet<Cell> {
+    ) -> BTreeMap<Cell, Acked> {
         let hosts = self.hosts.clone();
         let mut per: BTreeMap<usize, Vec<CellWrite>> = BTreeMap::new();
         for (cell, w) in by_cell {
@@ -278,7 +319,7 @@ impl Flock {
                 )
             });
         }
-        let mut acked = BTreeSet::new();
+        let mut acked = BTreeMap::new();
         while let Some(Ok((i, n, r))) = set.join_next().await {
             let Some(r) = r else {
                 self.slow[i] = true;
@@ -290,13 +331,38 @@ impl Flock {
                     continue;
                 };
                 if self.water.observe(&r.host, cell, d.epoch).is_ok() {
-                    acked.insert(cell);
+                    acked.insert(
+                        cell,
+                        Acked {
+                            host: r.host.clone(),
+                            epoch: d.epoch,
+                            committed_ms: d.committed_ms,
+                        },
+                    );
                 } else {
                     self.counts.stale += 1;
                 }
             }
         }
         acked
+    }
+
+    /// Count every egg that has a row in a replica now.
+    fn hatch(&mut self) {
+        let ready: Vec<(BoidId, Origin)> = self
+            .eggs
+            .iter()
+            .filter(|(id, _)| self.ledger.known(**id).is_some())
+            .map(|(id, o)| (*id, *o))
+            .collect();
+        for (id, origin) in ready {
+            self.eggs.remove(&id);
+            match origin {
+                Origin::Released => self.counts.released += 1,
+                Origin::Born => self.counts.births += 1,
+                Origin::Found => self.counts.found += 1,
+            }
+        }
     }
 
     fn mark(&mut self, kind: &'static str, b: &Boid, now: u64) {
@@ -331,9 +397,13 @@ impl Flock {
             .collect();
 
         // 2. Resolve.
+        let copies: BTreeSet<(BoidId, Cell)> =
+            read.copies.iter().map(|(c, b)| (b.id, *c)).collect();
         let resolved = resolve(read.copies);
 
-        // 3. Count. A boid read that nobody expected is adopted first.
+        // 3. Count. An egg with a row in a replica hatches; a boid read that
+        // nobody expected is adopted, as an egg.
+        self.hatch();
         let seen_at = now();
         for (id, (cell, b)) in &resolved.alive {
             if !self.expect.contains_key(id) {
@@ -345,14 +415,23 @@ impl Flock {
                         at_ms: seen_at,
                     },
                 );
-                self.counts.found += 1;
+                self.eggs.insert(*id, Origin::Found);
             }
         }
         let statuses = classify(&self.expect, &resolved.alive, &holes);
         let mut rewound_now = BTreeSet::new();
         let mut lost_now = Vec::new();
+        let mut unhatched_now = Vec::new();
         let seen = now();
         for (id, st) in &statuses {
+            if self.eggs.contains_key(id) {
+                // Never in a replica: a restore can take it, and that is
+                // not a loss of a boid the sky had (SPEC 5.4).
+                if *st == Status::Lost {
+                    unhatched_now.push(*id);
+                }
+                continue;
+            }
             match st {
                 Status::Rewound { by } => {
                     rewound_now.insert(*id);
@@ -379,7 +458,23 @@ impl Flock {
             ));
         }
         let at = now();
+        for id in &unhatched_now {
+            self.expect.remove(id);
+            self.eggs.remove(id);
+            self.ledger.forget(*id);
+            if let Some(b) = self.last_seen.remove(id) {
+                self.mark("unhatched", &b, at);
+            }
+        }
+        if !unhatched_now.is_empty() {
+            self.counts.unhatched += unhatched_now.len() as u64;
+            notes.push(format!(
+                "{} eggs never reached a replica: their cells came back without them",
+                unhatched_now.len()
+            ));
+        }
         for id in &lost_now {
+            self.ledger.forget(*id);
             if let Some(e) = self.expect.remove(id) {
                 self.lost.push_back(LostRec {
                     id: id.0,
@@ -397,10 +492,6 @@ impl Flock {
                 "{} birds lost: in no cell, and the sky has no holes",
                 lost_now.len()
             ));
-        }
-        let ghosts = resolved.ghost_count();
-        if ghosts > 0 {
-            self.counts.ghosts += ghosts as u64;
         }
         for (id, (_, b)) in &resolved.alive {
             self.next_id = self.next_id.max(id.0 + 1);
@@ -432,7 +523,7 @@ impl Flock {
         self.next_id += born.len() as u64;
         let born_ids: BTreeSet<BoidId> = born.iter().map(|b| b.id).collect();
 
-        // 5. Write, phase 1: upserts and ghost deletes.
+        // 5. Write: upserts, and the older copies a replica lets go.
         let was: BTreeMap<BoidId, Cell> = resolved
             .alive
             .iter()
@@ -440,6 +531,7 @@ impl Flock {
             .collect();
         let all: Vec<Boid> = next.iter().chain(&born).copied().collect();
         let p = plan(&was, &all);
+        let guarded = self.ledger.guard(&resolved.ghosts);
         let mut by_cell: BTreeMap<Cell, CellWrite> = BTreeMap::new();
         for (cell, boids) in &p.upserts {
             by_cell
@@ -452,7 +544,7 @@ impl Flock {
                 .upserts
                 .clone_from(boids);
         }
-        for (cell, ds) in &resolved.ghosts {
+        for (cell, ds) in &guarded.send {
             by_cell
                 .entry(*cell)
                 .or_insert_with(|| CellWrite {
@@ -465,17 +557,27 @@ impl Flock {
         }
         let acked = self.write(client, by_cell, &read.served).await;
         let at = now();
-        for (cell, boids) in &p.upserts {
-            if !acked.contains(cell) {
+        for (cell, a) in &acked {
+            let Some(boids) = p.upserts.get(cell) else {
                 continue;
-            }
+            };
+            self.ledger.acked(
+                &a.host,
+                Ack {
+                    cell: *cell,
+                    epoch: a.epoch,
+                    committed_ms: a.committed_ms,
+                    rows: boids.iter().map(|b| (b.id, b.tick)).collect(),
+                },
+            );
             for b in boids {
-                // A birth counts once its row is acknowledged; one that never
-                // lands never existed (its id is not reused).
+                // A boid new to the conductor is an egg until a row of it is
+                // replicated; one that never lands never existed (its id is
+                // not reused).
                 if born_ids.contains(&b.id) {
-                    self.counts.births += 1;
+                    self.eggs.insert(b.id, Origin::Born);
                 } else if first.contains(&b.id) {
-                    self.counts.released += 1;
+                    self.eggs.insert(b.id, Origin::Released);
                 }
                 self.expect.insert(
                     b.id,
@@ -487,22 +589,27 @@ impl Flock {
                 );
             }
         }
-
-        // Phase 2: delete from the cells boids left, where the upsert landed.
-        let mut phase2: BTreeMap<Cell, CellWrite> = BTreeMap::new();
-        for (cell, ds) in deletes(&p.moves, &acked) {
-            phase2.insert(
-                cell,
-                CellWrite {
-                    cell: cell.key(),
-                    upserts: vec![],
-                    deletes: ds,
-                },
-            );
+        // A move leaves its older copy behind, for the guard to delete later;
+        // that delete is not a ghost.
+        for m in &p.moves {
+            if acked.contains_key(&m.to) {
+                self.moved_from.insert((m.id, m.from));
+            }
         }
-        if !phase2.is_empty() {
-            let _ = self.write(client, phase2, &read.served).await;
+        for (cell, ds) in &guarded.send {
+            if !acked.contains_key(cell) {
+                continue;
+            }
+            for d in ds {
+                if !self.moved_from.remove(&(d.id, *cell)) {
+                    self.counts.ghosts += 1;
+                }
+            }
         }
+        self.moved_from.retain(|(id, cell)| {
+            self.expect.contains_key(id)
+                && (!read.served.contains_key(cell) || copies.contains(&(*id, *cell)))
+        });
 
         // The frame.
         for b in &all {
@@ -555,7 +662,10 @@ impl Flock {
             boids,
             cells,
             marks: self.marks.iter().cloned().collect(),
-            population: self.expect.len(),
+            population: self.expect.len() - self.eggs.len(),
+            eggs: self.eggs.len(),
+            held: guarded.held,
+            unconfirmed: self.ledger.pending(),
             flying,
             frozen,
             holes: holes.len(),

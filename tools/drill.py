@@ -8,7 +8,7 @@ buttons do, and exits non-zero if any claim fails:
   * kill -9 host-a: holes open, and the standby closes every one of them;
   * freeze the standby, start host-a: host-a takes back exactly its cells;
   * thaw the standby: it serves nothing and waits;
-  * throughout: no stale epoch, no cell served twice, and
+  * throughout: no stale epoch, no cell served twice, no bird lost, and
     population == released + births + found - lost.
 
     python3 tools/drill.py [base-url]
@@ -52,6 +52,8 @@ def invariants(f):
     c = f["counts"]
     if c["stale"] or c["double"]:
         check(False, f"stale {c['stale']}, double {c['double']}")
+    if c["lost"]:
+        check(False, f"{c['lost']} birds lost")
     want = c["released"] + c["births"] + c["found"] - c["lost"]
     if f["population"] != want:
         check(False, f"population {f['population']} != {want}")
@@ -87,7 +89,8 @@ f = wait("host-c closes every hole", lambda f: f["holes"] == 0, 150)
 check(owners(f, 2) == a_cells, f"host-c serves {owners(f, 2)} cells")
 c = f["counts"]
 deepest = max([r["by_ms"] for r in f["rewinds"]] or [0])
-print(f"takeover: {c['lost']} lost, {c['rewound']} came back older (up to {deepest} ms), {c['ghosts']} ghosts", flush=True)
+print(f"takeover: {c['lost']} lost, {c['unhatched']} unhatched, {c['rewound']} came back older (up to {deepest} ms), "
+      f"{c['ghosts']} ghosts, {f['held']} copies held", flush=True)
 time.sleep(3)
 
 post("/hosts/host-c/freeze")
@@ -103,8 +106,9 @@ c_view = next(h for h in state()["hosts"] if h["name"] == "host-c")["view"]
 check(not c_view["held"] and "0-8191" in c_view["waiting"], "the thawed host-c holds nothing and waits")
 
 c = f["counts"]
-print(f"final: population {f['population']}, born {c['births']}, lost {c['lost']}, rewound {c['rewound']}, "
-      f"ghosts {c['ghosts']}, stale {c['stale']}, double {c['double']}", flush=True)
+print(f"final: population {f['population']}, born {c['births']}, lost {c['lost']}, unhatched {c['unhatched']}, "
+      f"rewound {c['rewound']}, ghosts {c['ghosts']}, stale {c['stale']}, double {c['double']}", flush=True)
+check(c["lost"] == 0, f"no bird lost ({c['lost']})")
 if failures:
     print(f"\n{len(failures)} claim(s) failed")
     sys.exit(1)
