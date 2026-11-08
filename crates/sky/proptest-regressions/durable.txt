@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3c8290688c32b85863d790060284d6281d98549686a60caf9ca809db12b2ee6e # shrinks to ops = [Tick([0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Restore(1), Restore(5), Tick([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Tick([0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Ship(7), Ship(3), Report(1), Tick([0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Restore(3), Restore(5)]

@@ -205,6 +205,8 @@
     root.appendChild(el('div', { class: 'stats' }, [
       stat('in the sky', n(pop)), stat('flying', n(frame.flying), 'ok'), stat('frozen in holes', n(frame.frozen), frame.frozen ? 'warn' : ''),
       stat('born', n(c.births)), stat('came back older', n(c.rewound), c.rewound ? 'warn' : ''), stat('ghost copies cleared', n(c.ghosts)),
+      stat('eggs (not in a replica yet)', n(frame.eggs)), stat('old copies held for the replica', n(frame.held)),
+      stat('eggs that never hatched', n(c.unhatched), c.unhatched ? 'warn' : ''),
       stat('lost', n(c.lost), c.lost ? 'alert' : ''), stat('stale epochs refused', n(c.stale), c.stale ? 'alert' : ''),
       stat('cells served twice', n(c.double), c.double ? 'alert' : '')
     ]));

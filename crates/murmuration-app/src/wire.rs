@@ -34,6 +34,10 @@ pub struct ReadResp {
     pub refused: u32,
     /// Cells it owns but could not read, with why.
     pub failed: Vec<String>,
+    /// Every write this host committed at or before this, ms on its clock,
+    /// is in the replica (SPEC 4.6). `None` when it cannot say.
+    #[serde(default)]
+    pub durable_through_ms: Option<u64>,
 }
 
 /// One cell's writes, applied in one transaction.
@@ -63,6 +67,9 @@ pub struct Done {
     pub cell: String,
     /// The epoch it was written under.
     pub epoch: u64,
+    /// When the write committed, ms on the host's clock, read after the
+    /// commit returned.
+    pub committed_ms: u64,
 }
 
 /// A host's answer to a write.

@@ -42,14 +42,19 @@ murmuration-lab/
 
 The headcount separates birds **frozen** in holes (unknown until the hole
 closes), birds that **came back older** (their cell was restored from a
-replica that was behind), **ghost** copies (a bird in two cells after a move's
-delete failed or was rewound; the older copy is deleted), and birds **lost**:
-in no cell, with no holes left in the sky.
+replica that was behind), **ghost** copies (a stray older copy, from a lost
+answer or a restore; it is deleted), **eggs** (new birds not yet in a
+replica; one whose cell comes back without it is **unhatched**), and birds
+**lost**: in no cell, with no holes left in the sky. Lost stays at zero: a
+bird's older row is deleted only once a newer one is in a replica
+(`docs/adr/0003-delete-after-the-replica.md`), so a takeover can rewind a
+bird but not drop it.
 
 ## Layout
 
 - `crates/sky` — pure: the 24 × 16 torus of cells, the flock, moving a bird
-  between cells (insert, then delete), resolving copies, the headcount, the
+  between cells (insert, then delete once the new row is replicated), the
+  ledger of what is replicated, resolving copies, the headcount, the
   per-cell epoch watermark. Property-tested; three Verus models.
 - `crates/murmuration-app` — `murmuration-app host` (a tenant fleet, one
   tenant per cell, `POST /api/cells/read` and `/api/cells/write` in batches)
@@ -58,7 +63,7 @@ in no cell, with no holes left in the sky.
   host processes.
 - `tools/drill.py` — the same claims through the console, stdlib only.
 - `verus/src/` — `geom.rs` (cells and the torus), `moves.rs` (a move never
-  drops a bird), `resolve.rs` (the newest copy wins).
+  drops a bird, even across a restore from the replica), `resolve.rs` (the newest copy wins).
 
 ## Verify
 

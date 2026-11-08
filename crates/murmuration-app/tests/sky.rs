@@ -14,7 +14,7 @@
 //!   4. fail-back to host-a and a thawed zombie host-c: the zombie serves
 //!      nothing;
 //!   5. throughout: no stale epoch, no cell served twice, every boid id at
-//!      most once in the frame, and
+//!      most once in the frame, no boid lost, and
 //!      `population == released + births + found - lost`.
 
 use std::collections::BTreeSet;
@@ -182,6 +182,7 @@ fn check(f: &Frame) {
     let c = f.counts;
     assert_eq!(c.stale, 0, "an answer below the epoch watermark");
     assert_eq!(c.double, 0, "a cell served by two hosts in one tick");
+    assert_eq!(c.lost, 0, "a boid with a row in a replica was lost");
     let ids: BTreeSet<u64> = f.boids.iter().map(|b| b.0).collect();
     assert_eq!(ids.len(), f.boids.len(), "a boid drawn twice");
     assert_eq!(
@@ -274,8 +275,9 @@ async fn holes_open_and_close_and_the_count_adds_up() {
     assert_eq!(f.cells.iter().filter(|o| **o == 2).count(), a_cells);
     assert_eq!(f.frozen, 0);
     eprintln!(
-        "takeover: {} lost, {} came back older (up to {} ms), {} ghosts cleared",
+        "takeover: {} lost, {} unhatched, {} came back older (up to {} ms), {} ghosts cleared",
         f.counts.lost,
+        f.counts.unhatched,
         f.counts.rewound,
         f.rewinds.iter().map(|r| r.by_ms).max().unwrap_or(0),
         f.counts.ghosts

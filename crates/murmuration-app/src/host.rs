@@ -5,6 +5,14 @@
 //! owns the cell's slot at its current epoch before it touches the disk. A
 //! cell this host does not own is refused inside the batch (the batch's own
 //! `421`), so the conductor can ask every host for every cell.
+//!
+//! Each write answers with the time it committed, and each read with a
+//! bound: every write committed by then is in the replica
+//! ([`durable_through`]). The conductor deletes a boid's older row only once
+//! a newer one is under that bound (SPEC 4.6).
+
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use autumn_web::AppState;
 use autumn_web::db::fleet::{DatabaseFleet, FleetDatabase, FleetError};
@@ -32,6 +40,55 @@ fn owner(state: &AppState) -> String {
         .as_ref()
         .and_then(|f| f.ownership.as_ref())
         .map_or_else(|| "unowned".to_owned(), |o| o.owner.clone())
+}
+
+/// Slack for a replication tick's work between its caught-up check and its
+/// success stamp.
+///
+/// That work is a checkpoint and a retention sweep. autumn-web 0.10 stamps
+/// `last_success_at` after it, so the stamp can be later than the moment
+/// the database was caught up.
+pub const SETTLE_MS: u64 = 1_000;
+
+/// Ms on this host's clock: the clock the fleet's replication stamps with.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// A time by which every write this host committed is in the replica, from
+/// `replication:fleet`'s details read at `now_ms` or later.
+///
+/// `worst_lag_seconds` is whole seconds, rounded down, of the database that
+/// is furthest behind, measured from its last caught-up tick. So every open
+/// database caught up after `now - (lag + 1) s`, and everything committed
+/// [`SETTLE_MS`] before that has shipped. `None` when the details cannot
+/// vouch for every database a write went to: none open, one closing (it
+/// ships its tail outside the count), or one another process replicates.
+#[must_use]
+pub fn durable_through<S: std::hash::BuildHasher>(
+    now_ms: u64,
+    details: &HashMap<String, serde_json::Value, S>,
+) -> Option<u64> {
+    let n = |k: &str| details.get(k).and_then(serde_json::Value::as_u64);
+    if n("databases")? == 0 || n("closing")? != 0 || n("unowned")? != 0 {
+        return None;
+    }
+    let lag_ms = n("worst_lag_seconds")?.checked_add(1)?.checked_mul(1_000)?;
+    now_ms.checked_sub(lag_ms.checked_add(SETTLE_MS)?)
+}
+
+/// This host's bound, now. A fleet without replication has no replica to
+/// restore a cell from, so a commit is as durable as a write gets: now.
+async fn durable_now(fleet: &DatabaseFleet) -> Option<u64> {
+    let Some(replication) = fleet.replication() else {
+        return Some(now_ms());
+    };
+    // The clock first: the details are then at least as fresh.
+    let now = now_ms();
+    let health = replication.indicator().check().await;
+    durable_through(now, &health.details)
 }
 
 fn fleet(state: &AppState) -> Option<DatabaseFleet> {
@@ -122,6 +179,9 @@ pub async fn read(State(state): State<AppState>, Json(req): Json<ReadReq>) -> Re
     let Some(fleet) = fleet(&state) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no fleet").into_response();
     };
+    // Before any cell is opened: a cell this read opens afresh was not part
+    // of the bound, and its epoch tells the conductor so.
+    let durable_through_ms = durable_now(&fleet).await;
     // Each cell in its own task: they run together, and a read that is still
     // restoring a cell from the replica finishes even if the conductor stops
     // waiting (a dropped JoinHandle does not abort its task).
@@ -142,6 +202,7 @@ pub async fn read(State(state): State<AppState>, Json(req): Json<ReadReq>) -> Re
         cells: Vec::new(),
         refused: 0,
         failed: Vec::new(),
+        durable_through_ms,
     };
     for t in tasks {
         match t.await {
@@ -215,6 +276,7 @@ async fn write_cell(fleet: &DatabaseFleet, w: &CellWrite) -> Result<Done, Miss> 
     Ok(Done {
         cell: w.cell.clone(),
         epoch: epoch(&db),
+        committed_ms: now_ms(),
     })
 }
 
@@ -294,6 +356,57 @@ mod tests {
         assert!(sql.contains("WHERE excluded.tick >= boids.tick"));
         assert!(sql.contains("DELETE FROM boids WHERE id = 9 AND tick < 4;"));
         assert_eq!(cell_sql(&[], &[]).unwrap(), "BEGIN IMMEDIATE;\nCOMMIT;");
+    }
+
+    fn details(pairs: &[(&str, u64)]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|&(k, v)| (k.to_owned(), v.into()))
+            .collect()
+    }
+
+    #[test]
+    fn the_bound_is_the_worst_lag_rounded_up_plus_the_settle_margin() {
+        let ok = [
+            ("databases", 152),
+            ("closing", 0),
+            ("unowned", 0),
+            ("worst_lag_seconds", 1),
+        ];
+        assert_eq!(
+            durable_through(10_000, &details(&ok)),
+            Some(10_000 - 2_000 - SETTLE_MS)
+        );
+        let mut lagging = ok;
+        lagging[3].1 = 0;
+        assert_eq!(
+            durable_through(10_000, &details(&lagging)),
+            Some(10_000 - 1_000 - SETTLE_MS)
+        );
+        // Too early in the clock to say anything.
+        assert_eq!(durable_through(500, &details(&ok)), None);
+    }
+
+    #[test]
+    fn no_bound_when_a_database_is_outside_the_count() {
+        for (key, value) in [("databases", 0), ("closing", 1), ("unowned", 2)] {
+            let mut d = details(&[
+                ("databases", 152),
+                ("closing", 0),
+                ("unowned", 0),
+                ("worst_lag_seconds", 1),
+            ]);
+            d.insert(key.to_owned(), value.into());
+            assert_eq!(durable_through(10_000, &d), None, "{key} = {value}");
+        }
+        // A field missing: no bound.
+        assert_eq!(
+            durable_through(
+                10_000,
+                &details(&[("databases", 1), ("closing", 0), ("unowned", 0)])
+            ),
+            None
+        );
     }
 
     #[test]

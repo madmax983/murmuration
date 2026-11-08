@@ -66,6 +66,27 @@ of them eight times a second. Measured on a 2-CPU cloud box, release build,
      blocked by another connection` appears under this write rate. It is
      transient, as the message says, and the next tick succeeds.
 
+7. **No way to ask whether one database's write has reached the replica.**
+   Zero losses needs a bird's older row deleted only once its newer row is in
+   the replica (ADR 0003). autumn-web 0.10 knows this per database
+   (`ReplicationStatus::last_success_at`), but the only public view is the
+   whole fleet's `replication:fleet` health, in whole seconds. Murmuration
+   derives a per-host bound from it, `now - (worst_lag_seconds + 1) s - 1 s`,
+   which holds a move's older row about 3 s. The extra second is there because
+   `last_success_at` is stamped after the tick's checkpoint and retention
+   sweep, not when the tick found the database caught up. A commit that lands
+   between the two is behind the stamp but not shipped. So the stamp is not a
+   sound "replicated through" on its own.
+   - For the framework: a per-database bound, stamped at the caught-up check
+     (before `settled_tail` reads the WAL length), for example
+     `FleetReplication::replicated_through(&FleetDbKey) -> Option<DateTime<Utc>>`
+     (every transaction committed to that database by then is in the replica,
+     under its current generation; `None` while another process replicates it
+     or before its first caught-up tick). An awaitable form,
+     `wait_replicated(&FleetDbKey, DateTime<Utc>)`, would let an app ack a
+     write only once it ships. With it Murmuration drops the margin and the
+     whole-second rounding, and holds a row about one sync interval.
+
 ## Status
 
 The fixes shipped in autumn-web 0.10.0
@@ -78,7 +99,7 @@ and Murmuration now uses it. The findings above stand as measured on 0.9.
 | 2. Ownership follows the slot | No change. It works as documented. Still 152 and 232 cells. |
 | 3. Fencing held | Held again: no stale epoch and no cell served twice in any 0.10 run. |
 | 4. Restores after a takeover | Documented in the failover procedure. Murmuration already limits a host to 16 cells at a time. Kill to every hole closed: 8.4–8.7 s. |
-| 5. Losses at a takeover | About halved, measured again (below). The failover procedure names the loss: up to `worst_lag_seconds` per database. What is left is the cost of a 1 s sync interval. |
+| 5. Losses at a takeover | About halved by 0.10 (below), and **zero** with ADR 0003: Murmuration deletes a bird's older row only once a newer one is in a replica. Measured below. |
 | 6. Connection warning | Fixed, seen in the host logs. The SQLite warning counts open files and names `ulimit -n`. It no longer mentions Postgres. |
 | 6. `unowned: 80` | Fixed: a pass kept the replicator lock of a database that closed during the pass, so the reopen could not claim it. A pass now looks up each database when it gets to it. Not reproduced on the 4-CPU box with 0.9 or with 0.10 (`unowned` stayed 0), so this run does not confirm the fix. |
 | 6. Blocked checkpoint | Fixed. The first one logs at `debug`. A second one in a row logs a warning. 0.9 logged two such warnings across three runs; 0.10 logged none. |
@@ -109,3 +130,25 @@ reaches 3–6 s, and host-b's indicator went `DOWN` once. The thawed host-c
 reports 13–14 s, the time it spent frozen, until it drops the range. The
 first is finding 4 (restores compete with shipping). The second is a frozen
 process, as expected. Neither is a hot fleet's steady state.
+
+### Zero losses: deletes that wait for the replica
+
+Murmuration's own fix for finding 5 (ADR 0003), on autumn-web 0.10, the same
+box, three drills at 390–400 birds:
+
+| | 0.10, delete on ack | 0.10, delete once replicated |
+| --- | --- | --- |
+| Lost at the takeover | 35, 36, 42 | **0, 0, 0** |
+| Lost over the whole drill (takeover and fail-back) | 72–111 | **0, 0, 0** |
+| Eggs that never hatched | (not counted) | 0, 0, 0 |
+| Came back older at the takeover | 106–155 | 166–172 |
+| Deepest rewind at the takeover | 0.86–1.04 s | 2.8–3.1 s |
+| Older copies held at any time | 0 | ~790 p50, 1,070 max |
+| Tick time, p50 / max | 96 / 211 ms | 89 / 217 ms |
+| `worst_lag_seconds`, host-a / host-b, max | 1–2 / 2–3 s | 1–2 / 2 s |
+
+The birds the old protocol lost now come back from their older row, which is
+why more birds come back older and by more: up to the wait before a delete,
+about 3 s with finding 7's bound. A per-database API would bring that wait
+down to about one sync interval.
+

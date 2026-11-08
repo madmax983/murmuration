@@ -1,6 +1,6 @@
 # ADR 0002: Move a bird with insert-then-delete, and let the newest copy win
 
-Status: accepted, 2026-10-31
+Status: accepted, 2026-10-31. Phase 2 amended by ADR 0003: a delete waits for the replica.
 
 ## Context
 
