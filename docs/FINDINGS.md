@@ -86,6 +86,7 @@ of them eight times a second. Measured on a 2-CPU cloud box, release build,
      `wait_replicated(&FleetDbKey, DateTime<Utc>)`, would let an app ack a
      write only once it ships. With it Murmuration drops the margin and the
      whole-second rounding, and holds a row about one sync interval.
+     Filed as [autumn-foundation/autumn#3658](https://github.com/autumn-foundation/autumn/issues/3658).
 
 ## Status
 

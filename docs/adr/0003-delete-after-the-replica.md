@@ -41,7 +41,8 @@ sequenceDiagram
 - The bound comes from autumn-web 0.10's `replication:fleet` health:
   `now - (worst_lag_seconds + 1) s - 1 s`, and none while a database is
   closing, unowned, or none is open. autumn-web has no per-database "replica
-  current through" today; FINDINGS 7 proposes one, and the host switches to it
+  current through" today; FINDINGS 7 proposes one
+  (autumn-foundation/autumn#3658), and the host switches to it
   when it ships.
 
 `verus/src/moves.rs` models the live cells, the replica, ships and restores,
